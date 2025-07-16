@@ -1,0 +1,195 @@
+// Control PID Termocuna con Simulink
+// Arduino UNO + 2xDHT22 + SSR
+
+#include <DHT.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// Configuración sensores DHT22
+#define DHT1_PIN 2
+#define DHT2_PIN 4
+#define DHTTYPE DHT22
+DHT dht1(DHT1_PIN, DHTTYPE);
+DHT dht2(DHT2_PIN, DHTTYPE);
+
+// Configuración actuadores
+#define FOCO1_PIN 3
+#define FOCO2_PIN 5
+#define NIQUELINA_PIN 6
+
+// Configuración OLED (opcional)
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Variables globales
+float temp1 = 0, temp2 = 0, tempProm = 0;
+float hum1 = 0, hum2 = 0, humProm = 0;
+int pwmTemp = 0, pwmHum = 0;
+unsigned long lastReadTime = 0;
+unsigned long lastDisplayTime = 0;
+const unsigned long READ_INTERVAL = 1000;  // Leer sensores cada 1 segundo
+const unsigned long DISPLAY_INTERVAL = 500; // Actualizar display cada 0.5s
+
+void setup() {
+  // Inicializar Serial
+  Serial.begin(115200);
+  
+  // Inicializar sensores
+  dht1.begin();
+  dht2.begin();
+  
+  // Configurar pines de salida
+  pinMode(FOCO1_PIN, OUTPUT);
+  pinMode(FOCO2_PIN, OUTPUT);
+  pinMode(NIQUELINA_PIN, OUTPUT);
+  
+  // Inicializar OLED (opcional - comentar si no se usa)
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("OLED no encontrado"));
+  } else {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.display();
+  }
+  
+  // Mensaje inicial
+  Serial.println("Sistema Termocuna iniciado");
+  delay(2000); // Dar tiempo a los sensores
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // Leer sensores cada READ_INTERVAL
+  if (currentTime - lastReadTime >= READ_INTERVAL) {
+    lastReadTime = currentTime;
+    leerSensores();
+    enviarDatos();
+  }
+  
+  // Recibir comandos de Simulink
+  recibirComandos();
+  
+  // Aplicar PWM a actuadores
+  aplicarPWM();
+  
+  // Actualizar display (opcional)
+  if (currentTime - lastDisplayTime >= DISPLAY_INTERVAL) {
+    lastDisplayTime = currentTime;
+    actualizarDisplay();
+  }
+}
+
+void leerSensores() {
+  // Leer DHT1
+  float t1 = dht1.readTemperature();
+  float h1 = dht1.readHumidity();
+  
+  // Leer DHT2
+  float t2 = dht2.readTemperature();
+  float h2 = dht2.readHumidity();
+  
+  // Validar lecturas y actualizar solo si son válidas
+  if (!isnan(t1)) temp1 = t1;
+  if (!isnan(h1)) hum1 = h1;
+  if (!isnan(t2)) temp2 = t2;
+  if (!isnan(h2)) hum2 = h2;
+  
+  // Calcular promedios
+  tempProm = (temp1 + temp2) / 2.0;
+  humProm = (hum1 + hum2) / 2.0;
+}
+
+void enviarDatos() {
+  // Formato: T:temp1,temp2,H:hum1,hum2
+  Serial.print("T:");
+  Serial.print(temp1, 1);
+  Serial.print(",");
+  Serial.print(temp2, 1);
+  Serial.print(",H:");
+  Serial.print(hum1, 1);
+  Serial.print(",");
+  Serial.println(hum2, 1);
+}
+
+void recibirComandos() {
+  // Formato esperado: P:pwmTemp,pwmHum
+  if (Serial.available() > 0) {
+    String comando = Serial.readStringUntil('\n');
+    
+    if (comando.startsWith("P:")) {
+      // Extraer valores PWM
+      int colonPos = comando.indexOf(':');
+      int comaPos = comando.indexOf(',');
+      
+      if (colonPos != -1 && comaPos != -1) {
+        String pwmTempStr = comando.substring(colonPos + 1, comaPos);
+        String pwmHumStr = comando.substring(comaPos + 1);
+        
+        // Convertir y limitar valores
+        pwmTempStr.trim();
+pwmHumStr.trim();
+
+pwmTemp = constrain(pwmTempStr.toInt(), 0, 255);
+pwmHum = constrain(pwmHumStr.toInt(), 0, 128);
+      }
+    }
+  }
+}
+
+void aplicarPWM() {
+  // Control de temperatura - distribuir entre los dos focos
+  analogWrite(FOCO1_PIN, 255 - pwmTemp);
+  analogWrite(FOCO2_PIN,255 - pwmTemp);
+  
+  // Control de humedad
+  analogWrite(NIQUELINA_PIN, pwmHum);
+}
+
+void actualizarDisplay() {
+  display.clearDisplay();
+  
+  // Título
+  display.setCursor(0, 0);
+  display.println("TERMOCUNA CONTROL");
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+  
+  // Temperatura
+  display.setCursor(0, 15);
+  display.print("Temp: ");
+  display.print(tempProm, 1);
+  display.print(" C");
+  display.setCursor(70, 15);
+  display.print("PWM:");
+  display.print(pwmTemp);
+  
+  // Humedad
+  display.setCursor(0, 25);
+  display.print("Hum:  ");
+  display.print(humProm, 1);
+  display.print(" %");
+  display.setCursor(70, 25);
+  display.print("PWM:");
+  display.print(pwmHum);
+  
+  // Valores individuales sensores
+  display.setCursor(0, 40);
+  display.print("T1:");
+  display.print(temp1, 1);
+  display.setCursor(64, 40);
+  display.print("T2:");
+  display.print(temp2, 1);
+  
+  display.setCursor(0, 50);
+  display.print("H1:");
+  display.print(hum1, 1);
+  display.setCursor(64, 50);
+  display.print("H2:");
+  display.print(hum2, 1);
+  
+  display.display();
+}
