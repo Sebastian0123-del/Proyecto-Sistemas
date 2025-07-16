@@ -1,0 +1,157 @@
+classdef ArduinoSerial_COM8 < matlab.System
+    % Comunicación Serial con Arduino - Puerto COM8
+    % Control PID Termocuna
+    
+    properties (Access = private)
+        puerto = 'COM8'  % CAMBIAR AQUÍ SI USAS OTRO PUERTO
+        baudios = 115200
+        serialObj
+        tempActual = 25.0
+        humActual = 50.0
+        buffer = ''  % Buffer para datos incompletos
+    end
+    
+    methods (Access = protected)
+        function setupImpl(obj)
+            % Inicializar comunicación serial
+            try
+                % Cerrar puerto si está abierto
+                puertosAbiertos = serialportlist("available");
+                if ~any(strcmp(puertosAbiertos, obj.puerto))
+                    error('Puerto %s no disponible o ya en uso', obj.puerto);
+                end
+                
+                % Crear objeto serial
+                obj.serialObj = serialport(obj.puerto, obj.baudios);
+                configureTerminator(obj.serialObj, "LF");
+                flush(obj.serialObj);
+                
+                % Esperar a que Arduino se inicialice
+                fprintf('Conectando con Arduino en %s...\n', obj.puerto);
+                pause(2);
+                fprintf('Conexión establecida.\n');
+            catch ME
+                error('Error abriendo %s: %s\nVerifica que el Arduino está conectado y el puerto es correcto.', ...
+                    obj.puerto, ME.message);
+            end
+        end
+        
+        function [temperatura, humedad] = stepImpl(obj, pwmTemp, pwmHum)
+            % Ejecutar un paso de comunicación
+            try
+                % Limitar valores PWM
+                pwmTemp = max(0, min(255, round(pwmTemp)));
+                pwmHum = max(0, min(128, round(pwmHum)));
+                
+                % Enviar comando al Arduino
+                comando = sprintf('P:%d,%d', pwmTemp, pwmHum);
+                writeline(obj.serialObj, comando);
+                
+                % Leer datos disponibles
+                if obj.serialObj.NumBytesAvailable > 0
+                    datosNuevos = readline(obj.serialObj);
+                    obj.buffer = [obj.buffer char(datosNuevos)];
+                    
+                    % Buscar mensaje completo
+                    patron = 'T:([0-9.]+),([0-9.]+),H:([0-9.]+),([0-9.]+)';
+                    tokens = regexp(obj.buffer, patron, 'tokens');
+                    
+                    if ~isempty(tokens)
+                        % Extraer valores
+                        ultimoMensaje = tokens{end};
+                        temp1 = str2double(ultimoMensaje{1});
+                        temp2 = str2double(ultimoMensaje{2});
+                        hum1 = str2double(ultimoMensaje{3});
+                        hum2 = str2double(ultimoMensaje{4});
+                        
+                        % Validar datos
+                        if ~isnan(temp1) && ~isnan(temp2)
+                            obj.tempActual = (temp1 + temp2) / 2;
+                        end
+                        if ~isnan(hum1) && ~isnan(hum2)
+                            obj.humActual = (hum1 + hum2) / 2;
+                        end
+                        
+                        % Limpiar buffer
+                        obj.buffer = '';
+                    end
+                    
+                    % Prevenir overflow del buffer
+                    if length(obj.buffer) > 500
+                        obj.buffer = obj.buffer(end-200:end);
+                    end
+                end
+            catch ME
+                % En caso de error, mantener últimos valores
+                fprintf('Error comunicación: %s\n', ME.message);
+            end
+            
+            % Devolver valores actuales
+            temperatura = obj.tempActual;
+            humedad = obj.humActual;
+        end
+        
+        function releaseImpl(obj)
+            % Cerrar comunicación serial
+            if ~isempty(obj.serialObj) && isvalid(obj.serialObj)
+                flush(obj.serialObj);
+                delete(obj.serialObj);
+                fprintf('Comunicación serial cerrada.\n');
+            end
+        end
+        
+        function resetImpl(obj)
+            % Reset valores
+            obj.tempActual = 25.0;
+            obj.humActual = 50.0;
+            obj.buffer = '';
+            if ~isempty(obj.serialObj) && isvalid(obj.serialObj)
+                flush(obj.serialObj);
+            end
+        end
+        
+        % Definir número de entradas y salidas
+        function num = getNumInputsImpl(~)
+            num = 2;  % pwmTemp, pwmHum
+        end
+        
+        function num = getNumOutputsImpl(~)
+            num = 2;  % temperatura, humedad
+        end
+        
+        % Definir nombres de entradas/salidas
+        function [in1, in2] = getInputNamesImpl(~)
+            in1 = 'PWM_Temp';
+            in2 = 'PWM_Hum';
+        end
+        
+        function [out1, out2] = getOutputNamesImpl(~)
+            out1 = 'Temperatura';
+            out2 = 'Humedad';
+        end
+        
+        % Especificar tamaños de salida
+        function [sz1, sz2] = getOutputSizeImpl(~)
+            sz1 = [1 1];
+            sz2 = [1 1];
+        end
+        
+        % Especificar tipos de datos
+        function [dt1, dt2] = getOutputDataTypeImpl(~)
+            dt1 = 'double';
+            dt2 = 'double';
+        end
+        
+        % Especificar si las salidas son complejas
+        function [c1, c2] = isOutputComplexImpl(~)
+            c1 = false;
+            c2 = false;
+        end
+        
+        % Especificar si el tamaño es fijo
+        function [f1, f2] = isOutputFixedSizeImpl(~)
+            f1 = true;
+            f2 = true;
+        end
+    end
+end
